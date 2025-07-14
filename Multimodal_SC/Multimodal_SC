@@ -1,0 +1,332 @@
+
+
+# ===============================================
+# 1. Multi-Modal Semantic Communication Model
+# ===============================================
+class UDeepSC:
+    def __init__(self):
+        # Initialize encoders for image, speed, and radar
+        self.image_encoder = ViTEncoder()
+        self.speed_encoder = SpeedEncoder()
+        self.radar_encoder = RadarEncoder(input_dim=64, embed_dim=768)
+
+        # Vector quantization codebooks for each modality
+        self.codebook = {
+            'img': VectorQuantizer(),
+            'speed': VectorQuantizer(),
+            'radar': VectorQuantizer(),
+        }
+
+        # Transformer decoder for joint reconstruction or decision
+        self.decoder = TransformerDecoder()
+
+        # Task-specific output heads
+        self.heads = {
+            'imgc': Linear(decoder_dim, num_classes_img),
+            'speedc': Linear(decoder_dim, num_classes_speed),
+            'speedsr': Linear(decoder_dim, seq_length),
+            'radarc': Linear(decoder_dim, num_classes_radar),
+            'msa': Linear(decoder_dim, msa_output_dim)
+        }
+
+    def forward(self, img, speed, radar, task_type):
+        # 1. Feature extraction
+        img_feat = self.image_encoder(img)
+        speed_feat = self.speed_encoder(speed)
+        radar_feat = self.radar_encoder(radar)
+
+        # 2. Discrete representation
+        img_code = self.codebook['img'](img_feat)
+        speed_code = self.codebook['speed'](speed_feat)
+        radar_code = self.codebook['radar'](radar_feat)
+
+        # 3. Joint decoding and task prediction
+        memory = concatenate(img_code, speed_code, radar_code)
+        decoded = self.decoder(task_query=task_type, memory=memory)
+
+        return self.heads[task_type](decoded)
+
+
+# ===============================================
+# 2. Environment
+# ===============================================
+class SC:
+    def __init__(self, position, coverage_radius):
+        self.position = position
+        self.coverage_radius = coverage_radius
+        self.decoder = TransformerDecoder()
+
+    def calculate_channel_gain(self, vehicle_pos):
+        d = euclidean_distance(self.position, vehicle_pos)
+        path_loss = 128.1 + 37.6 * log10(d / 1000)
+        shadowing = np.random.normal(0, 8)
+        fading = np.random.rayleigh()
+        kappa = 10 ** (-path_loss / 10)
+        h = fading * sqrt(kappa * 10 ** (shadowing / 10))
+        return h
+
+    def calculate_capacity(self, h, bandwidth, noise):
+        sinr = h / noise
+        return bandwidth * log2(1 + sinr)
+
+    def decode_state(self, code_img, code_speed, code_radar, mem_img, mem_speed, mem_radar):
+        decoded_img = self.decoder(code_img, memory=mem_img)
+        decoded_speed = self.decoder(code_speed, memory=mem_speed)
+        decoded_radar = self.decoder(code_radar, memory=mem_radar)
+        size = numel(decoded_img + decoded_speed + decoded_radar) * 4
+        return size
+
+
+class TestEnvSC:
+    def __init__(self):
+        self.vehicle = create_vehicle()
+        self.rsu = SC(position=(x, y), coverage_radius=2000)
+        self.img_encoder = ViTEncoder()
+        self.speed_encoder = SpeedEncoder()
+        self.radar_encoder = RadarEncoder()
+        self.codebook = {'img': VQ(), 'speed': VQ(), 'radar': VQ()}
+        self.decoder = TransformerDecoder()
+
+    def step(self, action):
+        img = capture_image()
+        speed = get_vehicle_speed()
+        radar = read_radar_signal()
+
+        feat_img = self.img_encoder(img)
+        feat_speed = self.speed_encoder(speed)
+        feat_radar = self.radar_encoder(radar)
+
+        code_img = self.codebook['img'](feat_img)
+        code_speed = self.codebook['speed'](feat_speed)
+        code_radar = self.codebook['radar'](feat_radar)
+
+        h = self.rsu.calculate_channel_gain(vehicle_pos=self.vehicle.pos)
+        capacity = self.rsu.calculate_capacity(h, bandwidth, noise)
+
+        encoded_size = numel(code_img + code_speed + code_radar) * 4
+        delay = encoded_size / capacity
+
+        decode_time = self.rsu.decode_state(code_img, code_speed, code_radar, feat_img, feat_speed, feat_radar)
+
+        reward = compute_reward(delay + decode_time)
+        done = is_terminal()
+
+        return obs, reward, done, {}
+
+
+# ===============================================
+# 3. D3QN Agent and Replay Buffer
+# ===============================================
+class DuelingDQN:
+    def __init__(self, state_dim, action_dim):
+        self.shared = MLP(state_dim, hidden=64)
+        self.advantage = Linear(64, action_dim)
+        self.value = Linear(64, 1)
+
+    def forward(self, state):
+        x = self.shared(state)
+        adv = self.advantage(x)
+        val = self.value(x)
+        q = val + (adv - mean(adv))
+        return q
+
+
+class D3QN:
+    def __init__(...):
+        self.q_eval = DuelingDQN(...)
+        self.q_target = DuelingDQN(...)
+        self.memory = ReplayBuffer(...)
+
+    def choose_action(self, state):
+        if random < epsilon:
+            return random_action()
+        else:
+            return argmax(self.q_eval(state))
+
+    def learn():
+        states, actions, rewards, next_states, dones = memory.sample()
+        q_next = self.q_target(next_states).detach()
+        q_eval = self.q_eval(states)
+        target = rewards + gamma * max(q_next)
+        loss = MSE(q_eval[actions], target)
+        optimize(loss)
+
+
+class ReplayBuffer:
+    def __init__(...):
+        self.buffer = []
+
+    def store(state, action, reward, next_state, done):
+        self.buffer.append((...))
+
+    def sample():
+        return random.sample(self.buffer, batch_size)
+
+
+# ===============================================
+# 4. DRL Training Loop
+# ===============================================
+for episode in range(max_episodes):
+    state = env.reset()
+    done = False
+    total_reward = 0
+
+    while not done:
+        action = agent.choose_action(state)
+        next_state, reward, done, _ = env.step(action)
+        agent.memory.store(state, action, reward, next_state, done)
+        agent.learn()
+        state = next_state
+        total_reward += reward
+
+    log_reward(total_reward)
+    agent.update_epsilon()
+
+
+# ===============================================
+# 5. Multi-Modal Model Training
+# ===============================================
+def main():
+    model = UDeepSC(...)
+    dataset = load_multimodal_dataset()
+    optimizer = Adam(model.parameters())
+    criterion = select_loss()
+
+    for epoch in range(num_epochs):
+        for batch in dataloader:
+            img, speed, radar, label = batch
+            pred = model(img, speed, radar, task_type)
+            loss = criterion(pred, label)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+        if eval:
+            evaluate_model(model, val_loader)
+        save_model(model)
+# ===========================
+# 6. Radar Encoder Module
+# ===========================
+class RadarEncoder:
+    def __init__(self, input_dim, embed_dim):
+        # Radar encoder using a simple MLP architecture
+        self.model = Sequential(
+            Linear(input_dim, 128), ReLU(),
+            Linear(128, embed_dim), ReLU()
+        )
+
+    def forward(self, radar_input):
+        # Converts raw radar input to semantic embedding
+        return self.model(radar_input)
+
+
+# ===============================================
+# 7. Speed Encoder Module
+# ===============================================
+class SpeedEncoder:
+    def __init__(self, input_dim=1, embed_dim=768):
+        # Speed encoder using MLP
+        self.model = Sequential(
+            Linear(input_dim, 64), ReLU(),
+            Linear(64, embed_dim), ReLU()
+        )
+
+    def forward(self, speed_input):
+        return self.model(speed_input)
+
+# ===============================================
+# 8. Image Encoder Module (ViT-based)
+# ===============================================
+class ViTEncoder:
+    def __init__(self, img_size=224, patch_size=16, in_chans=3, embed_dim=768, depth=6, num_heads=12):
+        """
+        Vision Transformer encoder for image feature extraction.
+        Args:
+            img_size: Height/width of input image (square assumed)
+            patch_size: Size of image patches
+            in_chans: Number of input channels (e.g., 3 for RGB)
+            embed_dim: Dimension of patch embeddings
+            depth: Number of transformer layers
+            num_heads: Number of attention heads
+        """
+        self.patch_embed = PatchEmbedding(img_size, patch_size, in_chans, embed_dim)
+        self.transformer_layers = [
+            TransformerEncoderBlock(embed_dim, num_heads)
+            for _ in range(depth)
+        ]
+        self.norm = LayerNorm(embed_dim)
+
+    def forward(self, image):
+        x = self.patch_embed(image)         # [B, N_patches, embed_dim]
+        for layer in self.transformer_layers:
+            x = layer(x)
+        x = self.norm(x)                    # Final normalization
+        return x                            # Return encoded image sequence
+
+# ===============================================
+# 9. Multi-Modal Dataset Construction
+# ===============================================
+def load_multimodal_dataset():
+    """
+    Load multimodal dataset containing image, speed, radar, and labels.
+    Returns:
+        - A DataLoader with batches: (img, speed, radar, label)
+    """
+    dataset = []
+    for i in range(num_samples):
+        img = read_image(i)           # Load image tensor [C, H, W]
+        speed = read_speed(i)         # Load speed value [1]
+        radar = read_radar(i)         # Load radar features [64]
+        label = read_label(i)         # Task-specific ground truth
+        dataset.append((img, speed, radar, label))
+
+    return DataLoader(dataset, batch_size=batch_size, shuffle=True)
+
+
+# ===============================================
+# 10. Communication Cost and Reward Functions
+# ===============================================
+def compute_communication_time(encoded_bits, capacity_bps):
+    """
+    Calculate transmission time given channel capacity.
+    """
+    if capacity_bps == 0:
+        return float('inf')
+    return encoded_bits / capacity_bps
+
+
+def compute_reward(total_delay):
+    """
+    Compute reward inversely proportional to delay.
+    """
+    C = 100000
+    tau = 0.01
+    reward = C / (total_delay + tau)
+    return reward
+
+# ===============================================
+# 11. Utility Functions for Training and Evaluation
+# ===============================================
+def save_model(model, path="checkpoint.pth"):
+    torch.save(model.state_dict(), path)
+
+
+def load_model(model, path="checkpoint.pth"):
+    model.load_state_dict(torch.load(path))
+    return model
+
+
+def evaluate_model(model, dataloader):
+    """
+    Evaluate model accuracy over validation dataset.
+    """
+    correct, total = 0, 0
+    for img, speed, radar, label in dataloader:
+        with torch.no_grad():
+            pred = model(img, speed, radar, task_type='msa')
+            correct += (pred.argmax(dim=1) == label).sum().item()
+            total += len(label)
+
+    acc = correct / total
+    print(f"Validation Accuracy: {acc * 100:.2f}%")
+    return acc
